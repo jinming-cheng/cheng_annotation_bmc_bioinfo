@@ -1,7 +1,7 @@
 
 # Cheng et al annotation 
 
-This repository includes the cell type annotation from [Cheng et al. 2025. BMC Bioinformatics](https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-025-06044-0) for the 10x Xenium data and the paired Flex single-cell data of human HER2+ breast cancer Sample1.
+This repository includes the cell type annotation from [Cheng et al. 2025. BMC Bioinformatics](https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-025-06044-0) for the 10x human HER2+ breast cancer data: (1) 10x Xenium data of Sample 1, (2) paired 10x Flex single-cell data of Sample 1, and (3) 10x Xenium data of Sample 2.
 
 
 ## Citation
