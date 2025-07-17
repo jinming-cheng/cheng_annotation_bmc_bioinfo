@@ -1,0 +1,203 @@
+
+<!-- Notes: Prepare directories, ggplot colors and themes, self-defined functions -->
+
+<!-- # Analysis preparation -->
+
+<!-- ## Set directories -->
+
+<!-- set working dir -->
+```{r}
+work_dir <- paste0(".")
+setwd(work_dir)
+```
+
+<!-- input dir -->
+```{r}
+data_dir <- "../data"
+```
+
+<!-- output dir -->
+```{r}
+result_dir <- "results"
+if(!dir.exists(result_dir)){dir.create(result_dir,recursive = TRUE)}
+```
+
+<!-- output prefix -->
+```{r}
+my_output_prefix = paste0(result_dir,"/")
+my_output_prefix
+```
+
+<!-- rds file dir -->
+```{r}
+rds_res_dir = paste0(result_dir,"/","rds_files")
+if(!dir.exists(rds_res_dir)){dir.create(rds_res_dir,recursive = TRUE)}
+```
+
+<!-- rdata file dir -->
+```{r}
+rdata_res_dir = paste0(result_dir,"/","rdata_files")
+if(!dir.exists(rdata_res_dir)){dir.create(rdata_res_dir,recursive = TRUE)}
+```
+
+<!-- csv file dir -->
+```{r}
+csv_res_dir = paste0(result_dir,"/","csv_files")
+if(!dir.exists(csv_res_dir)){dir.create(csv_res_dir,recursive = TRUE)}
+```
+
+<!-- excel file dir -->
+```{r}
+excel_res_dir = paste0(result_dir,"/","excel_files")
+if(!dir.exists(excel_res_dir)){dir.create(excel_res_dir,recursive = TRUE)}
+```
+
+
+<!-- heatmap pdf files dir -->
+```{r}
+heatmap_res_dir = paste0(result_dir,"/","heatmap_files")
+if(!dir.exists(heatmap_res_dir)){dir.create(heatmap_res_dir,recursive = TRUE)}
+```
+
+<!-- txt files dir -->
+```{r}
+txt_res_dir = paste0(result_dir,"/","txt_files")
+if(!dir.exists(txt_res_dir)){dir.create(txt_res_dir,recursive = TRUE)}
+```
+
+
+<!-- Read in xenium gene panel -->
+```{r}
+xenium_gene_panel = read.csv( paste0(data_dir,"/",
+                                     "Xenium_FFPE_Human_Breast_Cancer_gene_groups.csv"),
+                                header = FALSE)
+colnames(xenium_gene_panel) = c("Symbol","Cell_type")
+```
+
+
+<!-- ## Load packages -->
+```{r}
+library(ggplot2)
+library(Seurat)
+library(vcd)
+```
+
+<!-- ## Set ggplot theme and color -->
+
+<!-- Prepare theme and colors for plotting: -->
+```{r}
+my_theme_ggplot <- theme(axis.text=element_text(size=12),
+                         axis.title=element_text(size=15, face="bold"),
+                         plot.title=element_text(size=15, face="bold", 
+                                                 hjust=0.5),
+                         plot.margin=margin(0.5, 0.5, 0.5, 0.5, "cm"),
+                         legend.title=element_text(size=12*0.8, face="bold"),
+                         legend.text=element_text(size=12*0.8),
+                         legend.key=element_rect(colour="transparent",
+                                                 fill="white"), 
+                         
+                         legend.key.size=unit(1*0.8, "cm"),
+                         legend.key.width=unit(0.2*3, "cm"),
+                         legend.key.height=unit(0.2*3, "cm"),
+                         legend.spacing.y=unit(0.2*3, "cm"),
+                         legend.spacing.x=unit(0.2*3, "cm"),
+                         
+                         panel.background=element_rect(fill="white",
+                                                       color="grey",
+                                                       size=1,
+                                                       linetype="blank"),
+                         axis.line=element_line(color='black'),
+                         panel.border=element_blank(),
+                         panel.grid.major=element_blank(),
+                         panel.grid.minor=element_blank(),
+                         
+)
+
+
+my_theme_facet <- theme(strip.background=element_rect(colour="white",
+                                                      fill="white"),
+                        strip.text=element_text(size=15, face="bold",
+                                                color="black") ) 
+
+my_colors_15 <- c("cornflowerblue", "darkorchid1", "firebrick1", "gold",
+                  "greenyellow", "mediumspringgreen", "mediumturquoise",
+                  "orange1", "pink", "deeppink3", "violet", "magenta",
+                  "goldenrod4", "cyan", "gray90")
+
+my_colors_20 = c("cornflowerblue", "darkorchid1","firebrick1","gold",
+                  "greenyellow", "mediumspringgreen","mediumturquoise",
+                 "orange1","pink","deeppink3","violet","magenta",
+                 "goldenrod4","cyan","gray90",
+                  "gray60","gray40","royalblue2","mediumblue","black")
+                 
+my_theme_no_right <- theme(
+  axis.line.y.right = element_blank(),
+  axis.ticks.y.right = element_blank(),
+  axis.text.y.right = element_blank(),
+  axis.title.y.right = element_text(
+    face = "bold",
+    size = 14,
+    margin = margin(r = 7)
+  )
+)
+
+ggsci_npg_10 = ggsci::pal_npg()(10)   # 10 colors nature publishing group
+
+ggsci_d3_20 = ggsci::pal_d3("category20")(20) # 20 colors
+
+col_fun = circlize::colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+```
+
+
+<!-- Colors used the 2021 EMBO J paper -->
+```{r,include=FALSE}
+col.pMedium <- scater:::.get_palette("tableau10medium")
+col.pDark <- scater:::.get_palette("tableau20")[2*(1:10)-1]
+col.pLight <- scater:::.get_palette("tableau20")[2*(1:10)]
+col.p <- c(col.pDark, col.pLight) # 20 colors
+```
+
+
+<!-- ## Function definition -->
+
+<!-- Define function to perform Seurat standard analysis with doublet prediction -->
+```{r}
+SeuratPipelineAfterQC = function(data_seurat,
+                                 n_var_genes = 2000,
+                                 n_dims = 30,
+                                 resolution = 0.2,
+                                 doublet_pred = TRUE,
+                                 double_rate = NULL){
+  
+  data_seurat <- NormalizeData(data_seurat, verbose=FALSE)
+  data_seurat <- FindVariableFeatures(data_seurat, nfeatures=n_var_genes,
+                                      verbose=FALSE)
+  data_seurat <- ScaleData(data_seurat,verbose = FALSE)
+  data_seurat <- RunPCA(data_seurat, verbose = FALSE)
+  data_seurat <- RunUMAP(data_seurat, dims=1:n_dims, verbose = FALSE)
+  data_seurat <- FindNeighbors(data_seurat, dims=1:n_dims, verbose = FALSE)
+  data_seurat <- FindClusters(data_seurat, resolution=resolution,
+                              verbose = FALSE)
+  
+  if(doublet_pred == TRUE){
+    sce <- as.SingleCellExperiment(DietSeurat(data_seurat,
+                                              graphs=c("pca","umap")) )
+    set.seed(42)
+    sce <- scDblFinder::scDblFinder(sce,dbr = double_rate)
+    data_seurat$db_score = sce$scDblFinder.score
+    data_seurat$db_type = sce$scDblFinder.class
+    data_seurat$db_type <- factor(data_seurat$db_type,
+                                  levels=c("singlet", "doublet"))
+  }
+  
+  data_seurat
+}
+```
+
+
+<!-- save rdata -->
+```{r,include=FALSE}
+save.image(file = paste0(my_output_prefix,"00_prepare.rdata") )
+```
+
+\pagebreak

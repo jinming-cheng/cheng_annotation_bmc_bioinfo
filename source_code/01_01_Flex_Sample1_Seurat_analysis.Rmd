@@ -1,0 +1,477 @@
+
+<!-- Author: Jinming Cheng -->
+<!-- Date: 17 July 2025 -->
+
+# Flex single cell data
+
+## Sample1
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+```{r,include=FALSE}
+eval_Seurat = FALSE
+# eval_fina_all_markers = FALSE
+eval_save_data_seurat_cell_type = TRUE
+# eval_save_rdata = TRUE
+```
+
+
+```{r, include=FALSE}
+load("results/00_prepare.rdata")
+
+library(Seurat)
+library(ggplot2)
+```
+
+### Read in data
+
+Read in raw count matrix
+```{r}
+filename_h5 = paste0(data_dir,"/",
+                     "Flex/GSM7782698_count_raw_feature_bc_matrix.h5")
+
+h5_data = Read10X_h5(filename_h5)
+```
+
+
+Number of genes and cells (not filtered)
+```{r}
+dim(h5_data)
+```
+
+
+Create seurat object
+```{r}
+data_seurat_raw <- CreateSeuratObject(counts = h5_data, 
+                                      project = "Sample1", 
+                                      min.cells = 3, 
+                                      min.features = 0)
+```
+
+```{r}
+dim(data_seurat_raw)
+```
+
+
+Filter out gene names starting with "DEPRECATED-"
+```{r}
+n_rows_to_filter = grep("DEPRECATED-",rownames(data_seurat_raw))
+```
+
+Remove deprecated genes
+```{r}
+data_seurat_raw = data_seurat_raw[-n_rows_to_filter,]
+```
+
+
+```{r}
+dim(data_seurat_raw)
+```
+
+
+Mitochondria read percentage
+```{r}
+data_seurat_raw[["percent.mt"]] <- PercentageFeatureSet(data_seurat_raw, 
+                                                        pattern = "^MT-")
+```
+
+
+Prefix of output file names
+```{r}
+sample_name = c("Flex_Sample1")
+one_group <- sample_name
+```
+
+Prefix of figures
+```{r outputPrefix}
+my_output_prefix_figure = paste0(my_output_prefix,"figures/",sample_name,"/")
+if(!dir.exists(my_output_prefix_figure)){dir.create(my_output_prefix_figure,recursive = TRUE)}
+```
+
+### Quality control
+
+read in cell type annotation from 10x
+```{r}
+filename_csv = paste0(data_dir,"/","Cell_type_annotation/",
+                      "Cell_type_annotation_scFFPE_seq.csv")
+cell_type_anno_10x = read.csv(filename_csv)
+rownames(cell_type_anno_10x) = cell_type_anno_10x$Barcode
+dim(cell_type_anno_10x)
+```
+
+check cell existence (should be true)
+```{r}
+all(rownames(cell_type_anno_10x) %in% colnames(data_seurat_raw) )
+```
+
+
+Use annotated cells from 10x 
+```{r}
+data_seurat = data_seurat_raw[,rownames(cell_type_anno_10x)]
+```
+
+
+N cells and genes after QC
+```{r}
+dim(data_seurat)
+```
+
+save filtered data as dge object for inferCNV analysis 
+```{r}
+df_genes = as.data.frame(rownames(data_seurat))
+colnames(df_genes) = "Symbol"
+dge_data = edgeR::DGEList(counts = as.matrix( GetAssay(data_seurat,assay = "RNA")@counts ),
+                          samples = data_seurat@meta.data,
+                          genes = df_genes)
+dge_data$samples$group = sample_name
+```
+
+
+<!-- save dge data into rds for inferCNV analysis -->
+```{r,include=FALSE}
+dge_data_dir=paste0(data_dir,"/","dge_data")
+filename_rds= paste0(dge_data_dir,"/","dge_",sample_name,".rds")
+saveRDS(dge_data, file =filename_rds)
+filename_rds = "temp"
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+### Seurat analysis
+
+set parameters 
+```{r}
+n_var_genes <- 1000
+n_dims      <- 30
+resolution  <- 0.2
+```
+
+Run Seurat pipeline and predict doublets
+```{r, eval=eval_Seurat}
+data_seurat = SeuratPipelineAfterQC(data_seurat = data_seurat,
+                                    n_var_genes = n_var_genes,
+                                    n_dims = n_dims,
+                                    resolution = resolution,
+                                    double_rate = 0.1 )
+
+```
+
+
+```{r}
+dim(data_seurat)
+```
+
+
+Backup raw clusters
+```{r}
+data_seurat$seurat_clusters.raw <- data_seurat$seurat_clusters
+```
+
+
+Find sub clusters for cluster 7 (epithelial). Decide to run FindSubCluster after looking the downstream feature plots of marker genes.
+```{r}
+data_seurat =  FindSubCluster(data_seurat,
+                              graph.name = "RNA_snn",
+                              cluster = "7",
+                              resolution = 0.1)
+```
+
+Assign sub clusters to seurat clusters and active.ident
+```{r}
+ordered_numer = sort(table(data_seurat$sub.cluster),decreasing = TRUE)
+data_seurat$sub.cluster = factor(data_seurat$sub.cluster,
+                                 levels = names(ordered_numer) )
+
+data_seurat$seurat_clusters = factor(data_seurat$sub.cluster,
+                                     levels = names(ordered_numer),
+                                     labels = 0:(length(ordered_numer)-1) )
+data_seurat@active.ident <- data_seurat$seurat_clusters
+```
+
+
+Find sub clusters for new cluster 7 (B and Plasma). Decide to run FindSubCluster after looking the downstream feature plots of marker genes.
+```{r}
+data_seurat =  FindSubCluster(data_seurat,
+                              graph.name = "RNA_snn",
+                              cluster = "7",
+                              resolution = 0.1)
+```
+
+Assign sub clusters to seurat clusters and active.ident
+```{r}
+ordered_numer = sort(table(data_seurat$sub.cluster),decreasing = TRUE)
+data_seurat$sub.cluster = factor(data_seurat$sub.cluster,
+                                 levels = names(ordered_numer) )
+
+data_seurat$seurat_clusters = factor(data_seurat$sub.cluster,
+                                     levels = names(ordered_numer),
+                                     labels = 0:(length(ordered_numer)-1) )
+data_seurat@active.ident <- data_seurat$seurat_clusters
+```
+
+Find sub clusters for new cluster 7 (pericyte and endothelial). Decide to run FindSubCluster after looking the downstream feature plots of marker genes.
+```{r}
+data_seurat =  FindSubCluster(data_seurat,
+                              graph.name = "RNA_snn",
+                              cluster = "7",
+                              resolution = 0.05)
+```
+
+Assign sub clusters to seurat clusters and active.ident
+```{r}
+ordered_numer = sort(table(data_seurat$sub.cluster),decreasing = TRUE)
+data_seurat$sub.cluster = factor(data_seurat$sub.cluster,
+                                 levels = names(ordered_numer) )
+
+data_seurat$seurat_clusters = factor(data_seurat$sub.cluster,
+                                     levels = names(ordered_numer),
+                                     labels = 0:(length(ordered_numer)-1) )
+data_seurat@active.ident <- data_seurat$seurat_clusters
+```
+
+
+Predict cell cycle phase
+```{r}
+s.genes <- subset(human_cc_genes,Phase=="S")$Symbol
+g2m.genes <- subset(human_cc_genes,Phase=="G2M")$Symbol
+data_seurat <- CellCycleScoring(data_seurat,  
+                                s.features = s.genes,g2m.features = g2m.genes)
+```
+
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+<!-- figures for the 2025. BMC. paper -->
+
+#### Figure 2A
+
+DimPlot by clusters
+```{r, fig.width=4*2*1, fig.height = 3*1*1, results='hide',include=FALSE}
+p <- list()
+my_group_by <- c("seurat_clusters")
+my_colors  <- my_colors_20
+
+for (i in 1:length(my_group_by)) {
+  p[[i]] <- DimPlot(data_seurat,
+                    pt.size=0.1,
+                    reduction="umap",
+                    group.by=my_group_by[i],
+                    shuffle=TRUE,
+                    cols=my_colors) +
+    my_theme_ggplot +
+    ggplot2::labs(title="")
+}
+
+my_output_filename = paste0(my_output_prefix_figure,
+                            one_group,"_",
+                            "UMAP_plot_clusters",
+                            ".png")
+
+png(my_output_filename,
+    width = 4*1*1.8, height = 3*1*1.8, units = "in",res = 300)
+patchwork::wrap_plots(p, nrow=1, byrow=FALSE)
+dev.off()
+```
+
+```{r, echo = FALSE, out.width='60%', fig.align='center'}
+knitr::include_graphics(my_output_filename)
+```
+
+
+#### Figure 2D
+
+Dimplot by cell types
+```{r, results='hide',include=FALSE}
+data_seurat$cell_type_label = data_seurat$seurat_clusters
+levels(data_seurat$cell_type_label) = c("Macrophage",
+                                        "T",
+                                        "Fibroblast",
+                                        "Tumor",  # "Tumor_ML"
+                                        "Tumor",  
+                                        "DCIS",   # "DCIS_ML"
+                                        "DCIS",
+                                        "Basal",
+                                        "Endothelial",
+                                        "B",
+                                        "LP",
+                                        "Plasma",
+                                        "Pericyte",
+                                        "Lymph.vessel",
+                                        "pDC",
+                                        "Mast",
+                                        "ML",
+                                        "Adipocyte",
+                                        "Tumor"
+                                        )
+
+nlevels(data_seurat$cell_type_label)
+
+ordered_numer = sort(table(data_seurat$cell_type_label),decreasing = TRUE)
+data_seurat$cell_type_label = factor(data_seurat$cell_type_label,
+                                     levels = names(ordered_numer) )
+
+
+xlim_range = range(data_seurat@reductions$umap@cell.embeddings[,1])
+my_xlim = c( floor(xlim_range[1]/5)*5,
+            ceiling(xlim_range[2]/5)*5 )
+
+
+my_plot = Seurat::DimPlot(data_seurat,
+                pt.size = 0.1,
+                reduction = "umap",
+                label = FALSE,
+                group.by = "cell_type_label",
+                shuffle = TRUE,
+                cols =  my_colors_20)  +
+  my_theme_ggplot +
+  ggplot2::labs(title = one_group) +
+  Seurat::NoLegend() +
+  ggplot2::scale_x_continuous(limits = my_xlim )
+
+
+my_plot = Seurat::LabelClusters(my_plot,
+                                id = 'cell_type_label',
+                                size = 4,
+                                repel = TRUE,
+                                nudge_x = c( 4,-3,-3, 0,-4, 0,
+                                             2, 0,-3, 0, 3, 3,
+                                             3, 2, 4, 5 ),
+                                nudge_y = c( 2,-4, 0, 4,-2, 2,
+                                             3,-2, 0, 2, 0,-1,
+                                             0,-2, 0,-1 )  )
+
+# nudge_x and nudge_y orders
+# 1. Endothelial, 2. DCIS, 3. T, 4. Macrophage, 5. Tumor, 6. Basal,
+# 7. Fibroblast, 8. LP, 9. B, 10. Pericyte, 11. Plasma, 12. Mast,
+# 13. pDC, 14. ML, 15. Adipocyte, 16. Lymph.vessel,
+
+
+my_output_filename = paste0(my_output_prefix_figure,one_group,"_",
+                            "DimPlot_cell_type_annotation",".png")
+png(my_output_filename,width = 8*0.7,height = 6*0.7,units = "in",res = 300)
+
+my_plot
+
+dev.off()
+```
+
+```{r, echo = FALSE, out.width='60%', fig.align='center'}
+knitr::include_graphics(my_output_filename)
+```
+
+
+#### Figure 2E
+
+```{r}
+my_genes_list = list("Epithelial" = c("EPCAM"), #  "ITGA6"
+                     "Stromal" = c("IGFBP7"),
+                     "Cycling" = c("MKI67","HMGB2"),
+                     "Basal" = c("KRT14", "ACTA2"),
+                     "LP" = c("ELF5", "MMP7"),
+                     "ML" = c("PRLR", "AREG"),
+                     "Tumor" = c("PTGDS","COL6A2"),  # MpBC markers for one subtype
+                     "TumorER" = c("SCGB2A1"),      # tumor ML (ER)
+                     "ML2" = c("ABCC11"),      # ABCC11 is expressed in both tumor ML (HER2 tumor) and normal ML
+                     "DCIS" = c("CEACAM6"),      # tumor ML (HER2 DCIS)
+                     "Fibroblast" = c("DCN","LUM", "PDGFRA", "COL1A2"), #PI16
+                     "Endothelial" = c("PECAM1", "VWF","CD36", "CD34"),
+                     "Pericyte" = c("RGS5", "MCAM"),
+                     "Adipocyte" = c("ADIPOQ","FABP4"),
+                     # "Schwann" = c("MPZ", "MBP"),
+                     "T" = c("CD3G", "CD3D","CD4","CD8A"),
+                     "NK" = c("NKG7", "NCR1"),
+                     "B" = c("MS4A1", "CD79A"),
+                     "Plasma" = c("JCHAIN", "IGKC"),
+                     "Macrophage" = c("C1QA","CD68"),
+                     "Dendritic"  = c("CD1C","FCER1A","IDO1","CST3","ITGAX","IRF8"),
+                     "pDC" = c("GZMB", "IRF7"),
+                     # FDCSP gene is a marker for follicular dendritic cells (FDCs)
+                     # "Mast" = c("TPSB2", "TPSAB1"),
+                     "Mast" = c("CTSG","MS4A2"),
+                     "Lymph.vessel" = c("LYVE1", "PROX1"),
+                     # "Muscle" = c("DES", "MYOG"),
+                     "Inflam.Macro" = c("S100A8","S100A9") # could also be dendritic, 2022.11.01
+
+)
+
+my_genes = do.call(c, my_genes_list)
+```
+
+
+DotPlot of my genes by cell types
+```{r, results='hide',include=FALSE}
+my_genes_list_df = cbind.data.frame(Symbol = unlist(my_genes_list),
+                                   cell_type = rep(names(my_genes_list),
+                                                lapply(my_genes_list, length)))
+
+anno_cell_type = strsplit(levels(data_seurat$cell_type_label),split = "[,_] *")
+names(anno_cell_type) = levels(data_seurat$cell_type_label)
+anno_cell_type = data.frame("cell_type" = unlist(anno_cell_type),
+                            "cell_anno" = rep(names(anno_cell_type),
+                                              lapply(anno_cell_type,length)) )
+
+my_genes_ordered = subset(my_genes_list_df,
+                          cell_type %in% anno_cell_type$cell_type )
+
+diff_cell_types = setdiff(levels(data_seurat$cell_type_label),
+                          unique(my_genes_ordered$cell_type))
+
+
+data_seurat$cell_type_ordered = data_seurat$cell_type_label
+data_seurat$cell_type_ordered =
+  factor(data_seurat$cell_type_ordered,
+         levels = c(unique(my_genes_ordered$cell_type), diff_cell_types) )
+
+# nlevel should be the same
+nlevels(data_seurat$cell_type_ordered) == nlevels(data_seurat$cell_type_label)
+my_genes_ordered = my_genes_ordered$Symbol
+
+my_genes_ordered = unique(c("EPCAM",
+                            "ESR1","PGR","ERBB2",
+                            my_genes_ordered))
+
+my_output_filename = paste0(my_output_prefix_figure,
+                            one_group,"_",
+                            "DotPlot_marker_genes_cell_type",".png")
+png(my_output_filename,
+    height = ceiling(2*length(my_genes_ordered)/7)+2,
+    width = ceiling(2*nlevels(data_seurat$cell_type_label)/4)+1,
+    units = "in",res = 300)
+
+Seurat::DotPlot(object = data_seurat,
+                group.by = "cell_type_ordered",
+                features = my_genes_ordered ) +
+  my_theme_ggplot + Seurat::RotatedAxis() +
+  ggplot2::labs(y = "Cell type", x = "Genes")  +
+  ggplot2::coord_flip()
+
+dev.off()
+```
+
+```{r, echo = FALSE, out.width='60%', fig.align='center'}
+knitr::include_graphics(my_output_filename)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- Save rds of one sample -->
+```{r, include=FALSE,eval=eval_save_data_seurat_cell_type}
+filename_rds = paste0(rds_res_dir,"/", "data_seurat_cell_type","_", one_group,".rds")
+saveRDS(data_seurat, file = filename_rds)
+```
+
+
+\pagebreak

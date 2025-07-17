@@ -1,0 +1,594 @@
+
+<!-- Author: Jinming Cheng -->
+<!-- Date: 17 July 2025 -->
+
+<!-- Notes: only SingleR, Azimuth and RCTD were selected for running multiple times  -->
+<!-- using subsetted references -->
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+<!-- # Sample1 Rep1 (v2) -->
+
+<!-- ## 10x Xenium -->
+
+### Multiple runs
+
+Run cell type annotation multiple times for SingleR, Azimuth and RCTD.
+
+
+```{r,include=FALSE}
+eval_sample_cells <- FALSE
+eval_predict_cell_type_SingleR = FALSE
+eval_predict_cell_type_azimuth = TRUE
+eval_predict_cell_type_RCTD = FALSE
+eval_save_rdata = TRUE
+```
+
+
+```{r,include=FALSE}
+load("results/00_prepare.rdata")
+```
+
+Load packages
+```{r}
+library(Seurat)
+library(ggplot2)
+library(edgeR)
+library(SingleR)
+library(Azimuth)
+library(scmap)
+library(spacexr)
+library(scPred)
+```
+
+
+<!-- Prefix of output file names -->
+```{r,include=FALSE}
+sample_name = "Rep1"
+one_group = paste0(sample_name,"_Xenium_v2")
+```
+
+```{r,include=FALSE}
+my_output_prefix_figure = paste0(my_output_prefix,"figures/",one_group,"/")
+if(!dir.exists(my_output_prefix_figure)){dir.create(my_output_prefix_figure,recursive = TRUE)}
+```
+
+<!-- Read in final xenium object -->
+```{r,include=FALSE}
+filename_rds = paste0(rds_res_dir,"/", "xenium_obj_cell_type","_", one_group,".rds")
+xenium.obj = readRDS( filename_rds)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+<!-- read in scRNASeq reference data -->
+```{r,include=FALSE}
+filename_rds = paste0(rds_res_dir,"/", 
+                      "data_seurat_cell_type_Flex_Sample1",".rds")
+data_seurat = readRDS(file = filename_rds)
+filename_rds = ""
+```
+
+<!-- Keep singlets only -->
+```{r,include=FALSE}
+data_seurat <- data_seurat[,data_seurat$db_type=="singlet"]
+```
+
+```{r}
+dim(data_seurat)
+```
+
+
+```{r}
+table(data_seurat$cell_type_label)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+#### Sample cells
+
+Function definition to sample cells for multiple groups ensuring a minimum number of cells in each group
+
+```{r}
+# Load necessary library
+library(dplyr)
+
+# Example data frame creation (replace this with your actual data)
+# set.seed(42) # for reproducibility
+# data <- data.frame(
+#   cell_id = 1:10000,
+#   cell_type = sample(c("Type1", "Type2", "Type3", "Type4"), 10000, replace = TRUE)
+# )
+
+# Function to sample cells
+sample_cells <- function(data, 
+                         n_total_cells = 5000, 
+                         min_per_group = 50,
+                         seed = 42) {
+  
+  # for reproducibility
+  set.seed(seed) # for reproducibility
+  
+  # Ensuring each group has at least min_per_group cells
+  initial_cells <- data %>%
+    dplyr::group_by(cell_type) %>%
+    dplyr::slice_sample(n = min_per_group)
+
+  # Additional sampling if n_total_cells > number of cells already sampled
+  n_additional_needed <- n_total_cells - nrow(initial_cells)
+  if (n_additional_needed > 0) {
+    # Exclude already selected cells
+    remaining_data <- dplyr::anti_join(data, initial_cells, by = "cell_id")
+
+    # Sample additional cells from the remaining data
+    additional_cells <- remaining_data %>%
+      dplyr::sample_n(n_additional_needed)
+    
+    # Combine initial and additional samples
+    final_cells <- dplyr::bind_rows(initial_cells, additional_cells)
+  } else {
+    final_cells <- initial_cells
+  }
+  
+  return(final_cells)
+}
+
+# # Use the function to sample cells
+# selected_cells <- sample_cells(data)
+# 
+# # View the results
+# table(selected_cells$cell_type)
+```
+
+
+Data used for sampling
+```{r}
+data <- data.frame(
+  cell_id = colnames(data_seurat),
+  cell_type = data_seurat$cell_type_label
+)
+```
+
+
+Number of cells for sampleing
+```{r}
+n_cells_sampling = seq(4000,20000,length.out =5)
+n_cells_sampling
+```
+
+Sample cells
+```{r,eval=eval_sample_cells}
+list_selected_cells <- list()
+
+for (k in  n_cells_sampling) {
+  # Use the function to sample cells
+  selected_cells <- sample_cells(data,
+                                 n_total_cells = k,
+                                 min_per_group = 50,
+                                 seed = 42)
+  list_selected_cells[[paste0(k,"cells")]] <- selected_cells
+}
+```
+
+<!-- save list_selected_cells into rds -->
+```{r,include=FALSE,eval=eval_sample_cells}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "list_selected_cells_from_sampling",".rds")
+saveRDS(list_selected_cells, file = filename_rds)
+```
+
+
+<!-- read list_selected_cells into rds -->
+```{r,include=FALSE,eval=!eval_sample_cells}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "list_selected_cells_from_sampling",".rds")
+list_selected_cells <- readRDS(file = filename_rds)
+```
+
+
+Cell number of each group from 1st sampling
+```{r}
+table(list_selected_cells[[1]]$cell_type)
+```
+
+```{r}
+names(list_selected_cells)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+Create a list to save time
+```{r}
+multiple_running_time = list()
+```
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+#### SingleR
+
+Method for cell type prediction
+```{r}
+pred_method = "SingleR"
+```
+
+
+Predict cell type
+```{r,eval=eval_predict_cell_type_SingleR}
+multiple_pred_celltype = list()
+
+# test dataset
+sce_test  = as.SingleCellExperiment(DietSeurat(xenium.obj,graphs=c("pca","umap")) )
+
+
+for (i in names(list_selected_cells) ) {
+  
+  # keep a subset of cells
+  cells_kept = list_selected_cells[[i]]$cell_id
+  data_seurat_sub = data_seurat[,cells_kept]
+  
+  # sce reference
+  sce_ref = data_seurat_sub
+  sce_ref <- as.SingleCellExperiment(DietSeurat(sce_ref,graphs=c("pca","umap")) )
+  common_genes = intersect( rownames(xenium.obj), rownames(sce_ref))
+  sce_ref = sce_ref[common_genes,]
+  
+  
+  # run Single R and record running time
+  t_start <- Sys.time()
+  multiple_pred_celltype[[i]] <- SingleR(test=sce_test, ref=sce_ref,
+                                         labels=sce_ref$cell_type_label, 
+                                         de.method="wilcox")
+  t_end <- Sys.time()
+  t_diff <- difftime(t_end, t_start,units = "mins")
+  multiple_running_time[[pred_method]][[i]][["t_start"]]  <- t_start
+  multiple_running_time[[pred_method]][[i]][["t_end"]]  <- t_end
+  multiple_running_time[[pred_method]][[i]][["t_diff"]]  <- t_diff
+}
+
+multiple_pred_celltype_SingleR <- multiple_pred_celltype
+```
+
+
+<!-- save pred_celltype into rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_SingleR}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_pred_celltype_",pred_method,".rds")
+saveRDS(multiple_pred_celltype_SingleR, file = filename_rds)
+```
+
+<!-- read in rds -->
+```{r,include=FALSE,eval=!eval_predict_cell_type_SingleR}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_pred_celltype_",pred_method,".rds")
+multiple_pred_celltype_SingleR = readRDS(file = filename_rds)
+```
+
+
+<!-- save running time rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_SingleR}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_running_time_",pred_method,".rds")
+saveRDS(multiple_running_time[[pred_method]], file = filename_rds)
+```
+
+<!-- read in rds -->
+```{r,include=FALSE,eval=!eval_predict_cell_type_SingleR}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_running_time_",pred_method,".rds")
+multiple_running_time[[pred_method]] = readRDS(file = filename_rds)
+```
+
+
+Add predicted cell type to xenium object
+```{r}
+for (i in names(list_selected_cells) ) {
+  one_col_name = paste0("predicted_cell_type_SingleR","_",i)
+  xenium.obj@meta.data[[one_col_name]] = 
+    multiple_pred_celltype_SingleR[[i]]$labels
+}
+```
+
+
+```{r,include=FALSE,eval=FALSE}
+table(xenium.obj@meta.data[["predicted_cell_type_SingleR_4000cells"]]==xenium.obj@meta.data[["predicted_cell_type_SingleR_8000cells"]])
+```
+
+
+print running time (minutes)
+```{r}
+time_df = do.call(rbind,lapply(multiple_running_time[[pred_method]],as.data.frame))
+a = round(as.numeric(time_df$t_diff),2)
+a = cbind.data.frame("NCells" = rownames(time_df),
+                     "RunningTime" = a )
+a 
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+#### Azimuth
+
+Method for cell type prediction
+```{r}
+pred_method = "Azimuth"
+```
+
+
+Predict cell types using azimuth
+```{r,results='hide',eval=eval_predict_cell_type_azimuth}
+
+multiple_pred_celltype = list()
+
+for (i in names(list_selected_cells) ) {
+  # azimuth reference dir
+  ref_azimuth_dir = paste0(my_output_prefix,"ref_azimuth/Flex_Sample1","_",i)
+  
+  # record running time
+  t_start <- Sys.time()
+  b = RunAzimuth(xenium.obj,reference = ref_azimuth_dir,assay = "Xenium")
+  t_end <- Sys.time()
+  t_diff <- difftime(t_end, t_start,units = "mins")
+  multiple_running_time[[pred_method]][[i]][["t_start"]]  <- t_start
+  multiple_running_time[[pred_method]][[i]][["t_end"]]  <- t_end
+  multiple_running_time[[pred_method]][[i]][["t_diff"]]  <- t_diff
+  
+  multiple_pred_celltype[[i]] = b@meta.data[,c("predicted.cell_type_label.score",
+                                               "predicted.cell_type_label",
+                                               "mapping.score")]
+}
+
+multiple_pred_celltype_azimuth <- multiple_pred_celltype
+
+```
+
+
+<!-- save pred_celltype into rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_azimuth}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_pred_celltype_",pred_method,".rds")
+saveRDS(multiple_pred_celltype_azimuth, file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_azimuth}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_pred_celltype_",pred_method,".rds")
+multiple_pred_celltype_azimuth = readRDS(file = filename_rds)
+```
+
+
+<!-- save running time rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_azimuth}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_running_time_",pred_method,".rds")
+saveRDS(multiple_running_time[[pred_method]], file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_azimuth}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_running_time_",pred_method,".rds")
+multiple_running_time[[pred_method]] = readRDS(file = filename_rds)
+```
+
+
+Add predicted cell type to xenium object
+```{r}
+for (i in names(list_selected_cells) ) {
+  one_col_name = paste0("predicted_cell_type_Azimuth","_",i)
+  xenium.obj@meta.data[[one_col_name]] =
+    multiple_pred_celltype_azimuth[[i]]$predicted.cell_type_label
+}
+```
+
+
+print running time (minutes)
+```{r}
+time_df = do.call(rbind,lapply(multiple_running_time[[pred_method]],as.data.frame))
+a = round(as.numeric(time_df$t_diff),2)
+a = cbind.data.frame("NCells" = rownames(time_df),
+                     "RunningTime" = a )
+a 
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+#### RCTD
+
+Method for cell type prediction
+```{r}
+pred_method = "RCTD"
+```
+
+
+Predict cell types
+```{r,results='hide', eval=eval_predict_cell_type_RCTD}
+multiple_pred_celltype = list()
+
+# Query counts for RCTD
+query.counts <- GetAssayData(xenium.obj, assay = "Xenium", slot = "counts")
+coords <- GetTissueCoordinates(xenium.obj, which = "centroids")
+rownames(coords) <- coords$cell
+coords$cell <- NULL
+query <- SpatialRNA(coords, query.counts, colSums(query.counts))
+
+for (i in names(list_selected_cells) ) {
+  
+  # RCTD reference dir
+  ref_RCTD_dir = paste0(my_output_prefix,"ref_RCTD/Flex_Sample1","_",i)
+  # RCTD reference
+  ref_RCTD = readRDS(file = paste0(ref_RCTD_dir,"/","reference.rds"))
+  
+  # create RCTD object
+  RCTD <- create.RCTD(query, ref_RCTD, 
+                      max_cores = 8,
+                      UMI_min = 0,     # min UMI to filter cells in spatial data
+                      counts_MIN = 0,  # minimum total counts per pixel of genes
+                      gene_cutoff = 0, # minimum normalized gene expression for genes to be included
+                      fc_cutoff = 0,
+                      fc_cutoff_reg = 0,
+                      UMI_min_sigma = 1,
+                      CELL_MIN_INSTANCE=10)
+  
+  # record running time
+  t_start <- Sys.time()
+  multiple_pred_celltype[[i]] <- run.RCTD(RCTD, doublet_mode = "doublet")
+  t_end <- Sys.time()
+  t_diff <- difftime(t_end, t_start,units = "mins")
+  multiple_running_time[[pred_method]][[i]][["t_start"]]  <- t_start
+  multiple_running_time[[pred_method]][[i]][["t_end"]]  <- t_end
+  multiple_running_time[[pred_method]][[i]][["t_diff"]]  <- t_diff
+  
+}
+
+multiple_pred_celltype_RCTD <- multiple_pred_celltype
+```
+
+
+<!-- save into rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_RCTD}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_pred_celltype_",pred_method,".rds")
+saveRDS(multiple_pred_celltype_RCTD, file = filename_rds)
+```
+
+<!-- read in rds -->
+```{r,include=FALSE,eval=!eval_predict_cell_type_RCTD}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_pred_celltype_",pred_method,".rds")
+multiple_pred_celltype_RCTD = readRDS(file = filename_rds)
+```
+
+
+<!-- save running time rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_RCTD}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_running_time_",pred_method,".rds")
+saveRDS(multiple_running_time[[pred_method]], file = filename_rds)
+```
+
+<!-- read in rds -->
+```{r,include=FALSE,eval=!eval_predict_cell_type_RCTD}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_running_time_",pred_method,".rds")
+multiple_running_time[[pred_method]] = readRDS(file = filename_rds)
+```
+
+
+Add predicted cell type to xenium object
+```{r}
+
+for (i in names(list_selected_cells) ) {
+  one_col_name = paste0("predicted_cell_type_RCTD","_",i)
+  annotations.df <- multiple_pred_celltype_RCTD[[i]]@results$results_df
+  annotations <- annotations.df$first_type
+  names(annotations) <- rownames(annotations.df)
+  # all.equal(names(annotations),colnames(xenium.obj))
+  xenium.obj@meta.data[[one_col_name]] <- annotations
+
+}
+
+```
+
+
+print running time (minutes)
+```{r}
+time_df = do.call(rbind,lapply(multiple_running_time[[pred_method]],as.data.frame))
+a = round(as.numeric(time_df$t_diff),2)
+a = cbind.data.frame("NCells" = rownames(time_df),
+                     "RunningTime" = a )
+a 
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- Save running time -->
+```{r,include=FALSE}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_",
+                      "multiple_runs_running_time_","combined",".rds")
+saveRDS(multiple_running_time, file = filename_rds)
+```
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+Comparing runtime of different methods (multipe runs)
+
+#### Figure 6B
+
+print running time (minutes)
+```{r}
+df_time = list()
+
+for (i in names(multiple_running_time)) {
+  time_df = do.call(rbind,lapply(multiple_running_time[[i]],as.data.frame))
+  a = round(as.numeric(time_df$t_diff),2)
+  a = cbind.data.frame("NCells" = rownames(time_df),
+                     "RunningTime" = a )
+  a$Method = i 
+  df_time[[i]] <- a
+}
+
+df_time = do.call(rbind,df_time)
+rownames(df_time) <- NULL
+df_time$NCells <- as.numeric(gsub("cells","",df_time$NCells))
+df_time$Method <- factor(df_time$Method, levels = names(multiple_running_time))
+df_time
+```
+
+
+linechart of multiple running time
+```{r, include=FALSE}
+p <- ggplot(data=df_time, aes(x=NCells, y=RunningTime,color=Method)) + 
+  scale_color_manual(values=my_colors_20) + 
+  geom_point(size=2) + 
+  geom_line(size=1.2) +
+  scale_x_continuous(breaks = seq(0,20000,4000)) + # change breaks
+  labs(x="N Cells in Reference", y="Running Time (Minutes)", fill="") + 
+  my_theme_ggplot + RotatedAxis()
+
+my_output_filename = paste0(my_output_prefix_figure,one_group,"_", 
+                            "linechart_multiple_runs_running_time", ".png")
+
+png(my_output_filename,
+    width = 4*2*0.8, height = 3*2*0.8, units = "in",res = 300)
+p
+dev.off()
+```
+
+```{r, echo = FALSE, out.width='60%', fig.align='center'}
+knitr::include_graphics(my_output_filename)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+\pagebreak
+
+

@@ -1,0 +1,1210 @@
+
+<!-- Author: Jinming Cheng -->
+<!-- Date: 17 July 2025 -->
+
+# Sample1 Rep1 (v2)
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+```{r,include=FALSE}
+eval_read_in_raw_data = FALSE
+eval_Seurat = FALSE
+eval_fina_all_markers = FALSE
+eval_predict_cell_type_SingleR = FALSE 
+eval_predict_cell_type_azimuth = FALSE
+eval_predict_cell_type_scmapCell = FALSE
+eval_predict_cell_type_RCTD = FALSE
+eval_predict_cell_type_scPred = TRUE
+eval_save_xenium_obj = TRUE
+eval_save_rdata = TRUE
+```
+
+
+## 10x Xenium
+
+### Read in data
+
+```{r,include=FALSE}
+load("results/00_prepare.rdata")
+```
+
+Load packages
+```{r loadPackage}
+library(Seurat)
+library(ggplot2)
+library(edgeR)
+library(SingleR)
+library(Azimuth)
+library(scmap)
+library(spacexr)
+library(scPred)
+```
+
+Prefix of output file names
+```{r sampleName}
+sample_name = "Rep1"
+one_group = paste0(sample_name,"_Xenium_v2")
+```
+
+```{r outputPrefix}
+my_output_prefix_figure = paste0(my_output_prefix,"figures/",one_group,"/")
+if(!dir.exists(my_output_prefix_figure)){dir.create(my_output_prefix_figure,recursive = TRUE)}
+```
+
+
+Load the Xenium data
+```{r ReadInData}
+raw_data_dir = "SpatialData/PublicData10x/data/"
+path <- paste0(raw_data_dir,"/","Rep1/outs")
+```
+
+```{r ReadInData, eval=eval_read_in_raw_data}
+xenium.obj.raw <- LoadXenium(path)
+```
+
+
+Number of genes and cells before filtering
+```{r}
+dim(xenium.obj.raw)
+```
+
+
+<!-- Supervised labeling & label transfer -->
+read in cell type annotation from 10x
+```{r}
+filename_csv = paste0(data_dir,"/","Cell_type_annotation/",
+                      "Cell_type_annotation_Xenium_Rep1_supervised.csv")
+cell_type_anno_10x = read.csv(filename_csv)
+cell_type_anno_10x$Barcode = as.integer(cell_type_anno_10x$Barcode)
+rownames(cell_type_anno_10x) = as.character(cell_type_anno_10x$Barcode)
+dim(cell_type_anno_10x)
+```
+
+raw cell type annotation 
+```{r}
+table(cell_type_anno_10x$Cluster)
+```
+
+<!-- check cell names: should be true-->
+```{r,include=FALSE}
+all.equal(colnames(xenium.obj.raw),rownames(cell_type_anno_10x))
+```
+
+Xenium object for analysis
+```{r}
+xenium.obj = xenium.obj.raw
+```
+
+Add sample name information
+```{r}
+xenium.obj@meta.data$sample_name = sample_name
+```
+
+
+Remove cells annotated as "Unlabeled"
+```{r RemoveZeroCounts}
+cells_kept = rownames(subset(cell_type_anno_10x, !(Cluster %in% "Unlabeled") ))
+xenium.obj <- xenium.obj[,cells_kept]
+```
+
+
+Number of genes and cells after filtering
+```{r}
+dim(xenium.obj)
+```
+
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+### Analysis of Xenium data
+
+Set parameters
+```{r}
+n_dims = 30
+n_resolution = 0.3
+```
+
+Seurat pipeline for data analysis
+```{r SeuratPipeline, results='hide',eval=eval_Seurat}
+xenium.obj <- NormalizeData(xenium.obj, assay = "Xenium")
+xenium.obj <- ScaleData(xenium.obj, assay = "Xenium")
+xenium.obj <- RunPCA(xenium.obj, npcs = n_dims, features = rownames(xenium.obj))
+xenium.obj <- RunUMAP(xenium.obj, dims = 1:n_dims)
+xenium.obj <- FindNeighbors(xenium.obj, reduction = "pca", dims = 1:n_dims)
+xenium.obj <- FindClusters(xenium.obj, resolution = n_resolution)
+```
+
+Number of cells in xenium data
+```{r}
+dim(xenium.obj)
+```
+
+Number of cells in each cluster
+```{r}
+table(xenium.obj$seurat_clusters)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+### Cell type annotation
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+#### Manual using known marker genes
+
+Manual assign cell types
+```{r}
+xenium.obj$predicted_cell_type_Manual = xenium.obj$seurat_clusters
+levels(xenium.obj$predicted_cell_type_Manual) =  c("Tumor",
+                                                   "T",
+                                                   "Fibroblast",
+                                                   "DCIS",
+                                                   "Basal",
+                                                   "Macrophage",
+                                                   "Endothelial",
+                                                   "Plasma",
+                                                   "B",
+                                                   "Tumor",
+                                                   "T",
+                                                   "Tumor",
+                                                   "Dendritic",
+                                                   "Dendritic",
+                                                   "Mast",
+                                                   "Dendritic")
+nlevels(xenium.obj$predicted_cell_type_Manual)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+Create a list to save running time
+```{r}
+running_time = list()
+```
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+<!-- For reference-based cell type annotation -->
+
+#### Read in reference data
+
+read in scRNASeq reference data
+```{r}
+filename_rds = paste0(rds_res_dir,"/", 
+                      "data_seurat_cell_type_Flex_Sample1",".rds")
+data_seurat = readRDS(file = filename_rds)
+```
+
+
+Number of singlets and doublets in the ref single cell data
+```{r}
+table(data_seurat$db_type)
+```
+
+Keep singlets only
+```{r}
+data_seurat <- data_seurat[,data_seurat$db_type=="singlet"]
+```
+
+Number of cells in reference
+```{r}
+dim(data_seurat)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+#### SingleR
+
+Method for cell type prediction
+```{r}
+pred_method = "SingleR"
+```
+
+
+convert seurat object into sce object
+```{r sceSinglet}
+sce_ref = data_seurat
+sce_ref <- as.SingleCellExperiment(DietSeurat(sce_ref,graphs=c("pca","umap")) )
+```
+
+
+sce reference data for cell type annotation
+```{r sceRef}
+common_genes = intersect( rownames(xenium.obj), rownames(sce_ref))
+sce_ref = sce_ref[common_genes,]
+```
+
+xenium object to sce object
+```{r sceTest}
+sce_test  = as.SingleCellExperiment(DietSeurat(xenium.obj,graphs=c("pca","umap")) )
+```
+
+predict cell type using singleR
+```{r PredictCellType, eval=eval_predict_cell_type_SingleR}
+t_start <- Sys.time()
+
+pred_celltype <- SingleR(test=sce_test, ref=sce_ref, 
+                         labels=sce_ref$cell_type_label, de.method="wilcox")
+
+t_end <- Sys.time()
+t_diff <- difftime(t_end, t_start,units = "mins")
+running_time[[pred_method]][["t_start"]]  <- t_start
+running_time[[pred_method]][["t_end"]]  <- t_end
+running_time[[pred_method]][["t_diff"]]  <- t_diff
+```
+
+<!-- save pred_celltype into rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_SingleR}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","pred_celltype_",pred_method,".rds")
+saveRDS(pred_celltype, file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_SingleR}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","pred_celltype_",pred_method,".rds")
+pred_celltype = readRDS(file = filename_rds)
+```
+
+
+<!-- save running time rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_SingleR}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","running_time_",pred_method,".rds")
+saveRDS(running_time[[pred_method]], file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_SingleR}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","running_time_",pred_method,".rds")
+running_time[[pred_method]] = readRDS(file = filename_rds)
+```
+
+
+Add predicted cell type to xenium object
+```{r AddPredictedCellType}
+xenium.obj@meta.data$predicted_cell_type_SingleR = factor(pred_celltype$labels)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+#### Azimuth
+
+Method for cell type prediction
+```{r}
+pred_method = "Azimuth"
+```
+
+azimuth reference dir
+```{r}
+ref_azimuth_dir = paste0(my_output_prefix,"ref_azimuth/Flex_Sample1")
+if(!dir.exists(ref_azimuth_dir)){dir.create(ref_azimuth_dir,recursive = TRUE)}
+```
+
+
+Predict cell types using azimuth
+```{r,results='hide',eval=eval_predict_cell_type_azimuth}
+t_start <- Sys.time()
+
+b = RunAzimuth(xenium.obj,reference = ref_azimuth_dir,assay = "Xenium")
+
+t_end <- Sys.time()
+t_diff <- difftime(t_end, t_start,units = "mins")
+running_time[[pred_method]][["t_start"]]  <- t_start
+running_time[[pred_method]][["t_end"]]  <- t_end
+running_time[[pred_method]][["t_diff"]]  <- t_diff
+
+pred_celltype_azimuth = b@meta.data[,c("predicted.cell_type_label.score",
+                                       "predicted.cell_type_label",
+                                       "mapping.score")]
+```
+
+
+<!-- save pred_celltype into rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_azimuth}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","pred_celltype_",pred_method,".rds")
+saveRDS(pred_celltype_azimuth, file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_azimuth}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","pred_celltype_",pred_method,".rds")
+pred_celltype_azimuth = readRDS(file = filename_rds)
+```
+
+
+<!-- save running time rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_azimuth}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","running_time_",pred_method,".rds")
+saveRDS(running_time[[pred_method]], file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_azimuth}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","running_time_",pred_method,".rds")
+running_time[[pred_method]] = readRDS(file = filename_rds)
+```
+
+assign predicted cell type to xenium object
+```{r}
+xenium.obj$predicted_cell_type_Azimuth <- pred_celltype_azimuth$predicted.cell_type_label
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+#### scmap
+
+Method for cell type prediction
+```{r}
+pred_method = "scmapCell"
+```
+
+convert seurat object into sce object
+```{r}
+sce = data_seurat
+sce <- as.SingleCellExperiment(DietSeurat(sce,graphs=c("pca","umap")) )
+```
+
+sce reference data for cell type annotation
+```{r}
+common_genes = intersect( rownames(xenium.obj), rownames(sce))
+sce_ref = sce[common_genes,]
+rowData(sce_ref)$feature_symbol <- rownames(sce_ref)
+```
+
+xenium object to sce object
+```{r}
+sce_query  = as.SingleCellExperiment(DietSeurat(xenium.obj,graphs=c("pca","umap")) )
+rowData(sce_query)$feature_symbol <- rownames(sce_query)
+```
+
+select the most informative features
+```{r}
+sce_ref <- selectFeatures(sce_ref, suppress_plot = TRUE)
+```
+
+set a seed
+```{r}
+set.seed(42)
+```
+
+create scmap-cell index
+```{r}
+sce_ref <- indexCell(sce_ref)
+```
+
+```{r}
+names(metadata(sce_ref)$scmap_cell_index)
+```
+
+
+Projection to indexes
+```{r, eval=eval_predict_cell_type_scmapCell}
+t_start <- Sys.time()
+
+scmapCell_results <- scmapCell(
+  projection = sce_query, 
+  index_list = list(
+    ref_sc = metadata(sce_ref)$scmap_cell_index
+  )
+)
+
+t_end <- Sys.time()
+t_diff <- difftime(t_end, t_start,units = "mins")
+running_time[[pred_method]][["t_start"]]  <- t_start
+running_time[[pred_method]][["t_end"]]  <- t_end
+running_time[[pred_method]][["t_diff"]]  <- t_diff
+```
+
+
+<!-- save scmapCell_results into rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_scmapCell}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","pred_celltype_",pred_method,".rds")
+saveRDS(scmapCell_results, file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_scmapCell}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","pred_celltype_",pred_method,".rds")
+scmapCell_results = readRDS(file = filename_rds)
+```
+
+
+<!-- save running time rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_scmapCell}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","running_time_",pred_method,".rds")
+saveRDS(running_time[[pred_method]], file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_scmapCell}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","running_time_",pred_method,".rds")
+running_time[[pred_method]] = readRDS(file = filename_rds)
+```
+
+
+Cluster annotation
+```{r}
+scmapCell_clusters <- scmapCell2Cluster(
+  scmapCell_results, 
+  list(
+    as.character(colData(sce_ref)$cell_type_label)
+  )
+)
+```
+
+
+assign predicted cell type to xenium object
+```{r}
+xenium.obj$predicted_cell_type_scmapCell <- scmapCell_clusters$scmap_cluster_labs
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+<!-- notes: The minimum cell number can be set to be lower than 25 cells. -->
+
+#### RCTD
+
+Method for cell type prediction
+```{r}
+pred_method = "RCTD"
+```
+
+Query counts for RCTD
+```{r}
+library(spacexr)
+query.counts <- GetAssayData(xenium.obj, assay = "Xenium", slot = "counts")
+coords <- GetTissueCoordinates(xenium.obj, which = "centroids")
+rownames(coords) <- coords$cell
+coords$cell <- NULL
+query <- SpatialRNA(coords, query.counts, colSums(query.counts))
+```
+
+RCTD reference dir
+```{r outputPrefix}
+ref_RCTD_dir = paste0(my_output_prefix,"ref_RCTD/Flex_Sample1")
+if(!dir.exists(ref_RCTD_dir)){dir.create(ref_RCTD_dir,recursive = TRUE)}
+```
+
+Reference for RCTD
+```{r}
+ref_RCTD = readRDS(file = paste0(ref_RCTD_dir,"/","reference.rds"))
+```
+
+library size range of spatial data
+```{r}
+range(query@nUMI)
+```
+
+run RCTD with many cores
+```{r,results='hide'}
+RCTD <- create.RCTD(query, ref_RCTD, 
+                    max_cores = 8,
+                    UMI_min = 0,     # min UMI to filter cells in spatial data
+                    counts_MIN = 0,  # minimum total counts per pixel of genes
+                    gene_cutoff = 0, # minimum normalized gene expression for genes to be included
+                    fc_cutoff = 0,
+                    fc_cutoff_reg = 0,
+                    UMI_min_sigma = 1,
+                    CELL_MIN_INSTANCE=10)
+```
+
+```{r}
+dim(query@counts)
+```
+
+```{r}
+dim(RCTD@spatialRNA@counts)
+```
+
+```{r,results='hide', eval=eval_predict_cell_type_RCTD}
+t_start <- Sys.time()
+
+RCTD <- run.RCTD(RCTD, doublet_mode = "doublet")
+
+t_end <- Sys.time()
+t_diff <- difftime(t_end, t_start,units = "mins")
+running_time[[pred_method]][["t_start"]]  <- t_start
+running_time[[pred_method]][["t_end"]]  <- t_end
+running_time[[pred_method]][["t_diff"]]  <- t_diff
+```
+
+<!-- save into rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_RCTD}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","pred_celltype_",pred_method,".rds")
+saveRDS(RCTD, file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_RCTD}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","pred_celltype_",pred_method,".rds")
+RCTD = readRDS(file = filename_rds)
+```
+
+<!-- save running time rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_RCTD}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","running_time_",pred_method,".rds")
+saveRDS(running_time[[pred_method]], file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_RCTD}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","running_time_",pred_method,".rds")
+running_time[[pred_method]] = readRDS(file = filename_rds)
+```
+
+assign predicted cell type to xenium object
+```{r}
+annotations.df <- RCTD@results$results_df
+annotations <- annotations.df$first_type
+names(annotations) <- rownames(annotations.df)
+all.equal(names(annotations),colnames(xenium.obj))
+xenium.obj$predicted_cell_type_RCTD <- annotations
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+#### scPred
+
+Method for cell type prediction
+```{r}
+pred_method = "scPred"
+```
+
+
+240318-notes: scPred does not require common genes between reference and query
+Reference scRNASeq dataset
+```{r}
+common_genes = intersect( rownames(xenium.obj), rownames(data_seurat))
+reference = data_seurat[common_genes,]
+```
+
+
+Let feature space to train the classifiers. By default, scPred will use all principal components.
+```{r,results='hide'}
+library(scPred)
+reference <- getFeatureSpace(reference, "cell_type_label")
+```
+
+
+Query dataset
+```{r}
+query = xenium.obj[common_genes,]
+```
+
+Train a model and predict cell types
+```{r,eval=eval_predict_cell_type_scPred}
+t_start <- Sys.time()
+# Train the classifiers, By default, scPred will use a support vector machine with a radial kernel.
+reference <- trainModel(reference)
+
+# predict cell types
+query <- scPredict(query, reference)
+
+t_end <- Sys.time()
+t_diff <- difftime(t_end, t_start,units = "mins")
+running_time[[pred_method]][["t_start"]]  <- t_start
+running_time[[pred_method]][["t_end"]]  <- t_end
+running_time[[pred_method]][["t_diff"]]  <- t_diff
+```
+
+
+<!-- save reference into rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_scPred}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","reference_trained_",pred_method,".rds")
+saveRDS(reference, file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_scPred}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","reference_trained_",pred_method,".rds")
+reference = readRDS(file = filename_rds)
+```
+
+
+<!-- save into rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_scPred}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","pred_celltype_",pred_method,".rds")
+saveRDS(query, file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_scPred}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","pred_celltype_",pred_method,".rds")
+query = readRDS(file = filename_rds)
+```
+
+
+<!-- save running time rds -->
+```{r,include=FALSE,eval=eval_predict_cell_type_scPred}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","running_time_",pred_method,".rds")
+saveRDS(running_time[[pred_method]], file = filename_rds)
+```
+
+```{r,include=FALSE,eval=!eval_predict_cell_type_scPred}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","running_time_",pred_method,".rds")
+running_time[[pred_method]] = readRDS(file = filename_rds)
+```
+
+assign predicted cell type to xenium object
+```{r}
+xenium.obj$predicted_cell_type_scPred <- query$scpred_prediction
+```
+
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- Save running time -->
+```{r,include=FALSE}
+filename_rds = paste0(rds_res_dir,"/", one_group,"_","running_time_","combined",".rds")
+saveRDS(running_time, file = filename_rds)
+```
+
+<!-- save Xenium data into rds -->
+```{r, include=FALSE,eval=eval_save_xenium_obj}
+filename_rds = paste0(rds_res_dir,"/", "xenium_obj_cell_type","_", one_group,".rds")
+saveRDS(xenium.obj, file = filename_rds)
+```
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+<!-- settings for plotting -->
+
+<!-- Set figure with and heigt for image dim plot -->
+```{r,include=FALSE}
+do_flip = TRUE
+if(do_flip){
+  fig_w = 3*2*1.6
+  fig_h = 3*1.6
+}else{
+  fig_w = 3*2*1
+  fig_h = 3*2*1
+}
+```
+
+
+<!-- Set point size -->
+```{r,include=FALSE}
+point_size = 1.5
+```
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+<!-- figures for 2025. BMC Bioinformatics. paper. -->
+
+## Figures
+
+### Figure 3
+
+Methods for cell type annotation
+```{r}
+pred_methods = c("Manual","SingleR","Azimuth","RCTD","scPred","scmapCell")
+```
+
+Set colors
+```{r}
+all_cell_types = list()
+for (pred_method in pred_methods) {
+  all_cell_types[[pred_method]] = 
+    levels(factor(unlist(xenium.obj[[paste0("predicted_cell_type_",
+                                                  pred_method)]])))
+}
+all_cell_types = unique(do.call(c,all_cell_types)) # use order of first method (Manual)
+# all_cell_types = sort( all_cell_types ) # use alphabetic order
+all_cell_types = all_cell_types[all_cell_types != "unassigned"]
+all_cell_types = c(all_cell_types,"unassigned") # put "unassigned" last
+all_cell_types 
+```
+
+
+```{r}
+my_named_colors = my_colors_20[1:length(all_cell_types)]
+names(my_named_colors) = all_cell_types
+my_named_colors["unassigned"] <- "black"
+```
+
+
+DimPlot by predicted cell types
+```{r DimPlotPredictedCellType, results='hide',include=FALSE}
+p <- list()
+
+for (pred_method in pred_methods) {
+
+  xenium.obj$predicted_cell_type = unlist(xenium.obj[[paste0("predicted_cell_type_",
+                                                      pred_method)]])
+  # order cell type by alphabetic order
+  # xenium.obj$predicted_cell_type = factor(as.character(xenium.obj$predicted_cell_type))
+  
+  # (Or) order cell type by cell number
+  ordered_numer = sort(table(xenium.obj$predicted_cell_type),decreasing = TRUE)
+  xenium.obj$predicted_cell_type = factor(xenium.obj$predicted_cell_type,
+                                          levels = names(ordered_numer) )
+  
+
+  
+  my_group_by <- c("predicted_cell_type")
+  my_colors  <- my_named_colors[levels(xenium.obj$predicted_cell_type)]
+  
+
+  p[[pred_method]] <- DimPlot(xenium.obj,
+                    pt.size=point_size,
+                    reduction="umap",
+                    group.by=my_group_by,
+                    shuffle=TRUE,
+                    cols=my_colors) +
+    my_theme_ggplot +
+    ggplot2::labs(title=pred_method) + 
+    theme(plot.title=element_text(size=20, face="bold",hjust=0.5)) + 
+    
+    theme(legend.title=element_text(size=12*0.8, face="bold"),  # modify legend size for thesis
+          legend.text=element_text(size=12*0.8),
+          legend.key.size=unit(1*0.8, "cm"),
+          legend.key.width=unit(0.45, "cm"),
+          legend.key.height=unit(0.45, "cm"),
+          legend.spacing.y=unit(0.45, "cm"),
+          legend.spacing.x=unit(0.45, "cm")
+          )
+  
+}
+
+
+my_output_filename = paste0(my_output_prefix_figure,
+                            one_group,"_",
+                            "UMAP_plot_predicted_cell_type",".png")
+
+n_col = 2
+n_row = ceiling(length(pred_methods)/n_col)
+scale_file = 0.8
+
+png(my_output_filename,
+    width = 4.2*1*1.5*n_col*scale_file, height = 3*1*1.5*n_row*scale_file, units = "in",res = 300)
+print(patchwork::wrap_plots(p, ncol=n_col, byrow=TRUE))
+dev.off()
+```
+
+
+```{r, echo = FALSE, out.width='60%', fig.align='center'}
+my_output_filename = paste0(my_output_prefix_figure,
+                            one_group,"_",
+                            "UMAP_plot_predicted_cell_type",".png")
+knitr::include_graphics(my_output_filename)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+
+### Figure 4
+
+Image DimPlot of predicted cell type 
+```{r,include=FALSE}
+p=list()
+
+for (pred_method in pred_methods) {
+  xenium.obj$predicted_cell_type = unlist(xenium.obj[[paste0("predicted_cell_type_",
+                                                      pred_method)]])
+  # order cell type by alphabetic order
+  # xenium.obj$predicted_cell_type = factor(as.character(xenium.obj$predicted_cell_type))
+  
+  # (Or) order cell type by cell number
+  ordered_numer = sort(table(xenium.obj$predicted_cell_type),decreasing = TRUE)
+  xenium.obj$predicted_cell_type = factor(xenium.obj$predicted_cell_type,
+                                          levels = names(ordered_numer) )
+  
+  my_colors  <- my_named_colors[levels(xenium.obj$predicted_cell_type)]
+  
+  
+  p[[pred_method]] <- ImageDimPlot(xenium.obj,
+                    group.by = "predicted_cell_type",
+                    cols = my_colors, 
+                    axes = TRUE) + 
+      theme_bw() + my_theme_ggplot + 
+    labs(title = pred_method,fill="")  + 
+    theme(plot.title=element_text(size=25, face="bold",hjust=0.5)) + 
+    
+    theme(legend.title=element_text(size=12*0.8, face="bold"),  # modify legend size for thesis
+          legend.text=element_text(size=12*0.8),
+          legend.key.size=unit(1*0.8, "cm"),
+          legend.key.width=unit(0.45, "cm"),
+          legend.key.height=unit(0.45, "cm"),
+          legend.spacing.y=unit(0.45, "cm"),
+          legend.spacing.x=unit(0.45, "cm")
+          )
+  
+  
+  if(do_flip){p[[pred_method]] <- p[[pred_method]] + coord_flip()}
+
+
+}
+
+
+n_col = 2
+n_row = ceiling(length(pred_methods)/n_col)
+scale_file = 0.8
+
+my_output_filename = paste0(my_output_prefix_figure,one_group,"_",
+                            "ImageDimPlot_of_predicted_cell_type",".png")
+png(my_output_filename, width = fig_w*n_col*scale_file,
+    height = fig_h*n_row*scale_file, units = "in",res = 300)
+print(patchwork::wrap_plots(p, ncol=n_col, byrow=TRUE))
+dev.off()
+```
+
+
+```{r, echo = FALSE, out.width='60%', fig.align='center'}
+my_output_filename = paste0(my_output_prefix_figure,one_group,"_",
+                            "ImageDimPlot_of_predicted_cell_type",".png")
+knitr::include_graphics(my_output_filename)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+### Figure 5
+
+#### 5A
+
+Number of cells of each predicted cell type
+```{r}
+tab = list()
+pred_methods = c("Manual","SingleR","Azimuth","RCTD","scPred","scmapCell")
+
+for (i in pred_methods) {
+  tab[[i]] = as.data.frame( table(xenium.obj[[paste0("predicted_cell_type_",i)]]) )
+  tab[[i]]$Method = i
+  colnames(tab[[i]])[1] <- "predicted_cell_type"
+}
+
+tab = do.call(rbind.data.frame,tab)
+
+# make sure the levels order is the same with pred_methods!
+tab$Method = factor(tab$Method,levels = pred_methods)
+```
+
+
+Percentage of each cell type in by each method 
+```{r}
+ratio <- tapply(tab$Freq, tab$Method, 
+                function(x){round(100*x/sum(x),2)})
+ratio <- do.call(c,ratio)
+tab$Ratio <- ratio
+```
+
+relevel predicted cell type
+```{r}
+tab$predicted_cell_type <- factor(tab$predicted_cell_type,levels = all_cell_types)
+```
+
+Barplot of cell number of predicted cell types
+```{r}
+my_colors = my_named_colors 
+p1 <- ggplot(data=tab, aes(x=Method, y=Freq, fill=predicted_cell_type)) + 
+  scale_fill_manual(values=my_colors) + geom_bar(stat="identity") + 
+  labs(x=NULL, y="Number", fill="Predicted cell type") + 
+  my_theme_ggplot + RotatedAxis() + 
+  theme(legend.title=element_text(size=12*0.8, face="bold"),
+        legend.text=element_text(size=12*0.8),
+        legend.key.size=unit(1*0.8, "cm"),
+        legend.key.width=unit(0.45, "cm"),
+        legend.key.height=unit(0.45, "cm"),
+        legend.spacing.y=unit(0.45, "cm"),
+        legend.spacing.x=unit(0.45, "cm")
+        )
+```
+
+#### 5B
+
+```{r}
+list_similarity = list()
+
+ref_based_methods = c("SingleR","Azimuth","RCTD","scPred","scmapCell")
+
+a = as.character(xenium.obj$predicted_cell_type_Manual)
+
+for (one_method in ref_based_methods ) {
+  b = as.character(xenium.obj@meta.data[,paste0("predicted_cell_type_",one_method)])
+  
+  tab_num <- table(a == b)
+  
+  list_similarity[[one_method]] <- tab_num
+}
+
+# use rbind
+tab_similarity = do.call(rbind,list_similarity)
+tab_similarity
+```
+
+Cell proportion of each cell type in each sample
+```{r}
+tab_ratio <- round(100*tab_similarity/rowSums(tab_similarity), 2)
+tab_ratio <- as.data.frame.matrix(tab_ratio)
+tab_ratio
+```
+
+```{r}
+tab_ratio <- cbind(tab_ratio, Method=rownames(tab_ratio))
+tab_ratio$Method <- factor(tab_ratio$Method, 
+                           levels= ref_based_methods)
+tab_ratio = tab_ratio[,c("TRUE","Method")]
+colnames(tab_ratio)[1] <- "Similarity"
+tab_ratio
+```
+
+
+```{r}
+p2 <- ggplot(data=tab_ratio, aes(x=Method, y=Similarity, fill=Method)) + 
+  scale_fill_manual(values=my_colors_20) + geom_bar(stat="identity") + 
+  geom_text(aes(label = Similarity), vjust=-0.5, size=5) + # add this line after geom_bar to avoid incorrect visualization
+  ylim(c(0,80)) + 
+  labs(y="Percentage (%)", x=NULL, fill="Method", title = "Similarity with Manual") + 
+  my_theme_ggplot + RotatedAxis() # + NoLegend()
+
+```
+
+
+
+#### 5C
+
+<!-- read in scRNASeq reference data -->
+```{r,include=FALSE}
+filename_rds = paste0(rds_res_dir,"/", 
+                      "data_seurat_cell_type_Flex_Sample1",".rds")
+data_seurat = readRDS(file = filename_rds)
+data_seurat$sample_name = "Flex_Sample1"
+data_seurat <- data_seurat[,data_seurat$db_type=="singlet"]
+```
+
+
+construct pseudobulk data from scRNASeq data
+```{r}
+dge_PB = list()
+```
+
+```{r}
+i = "Ref"
+library(edgeR)
+dge_PB[[i]] = MySeurat2PB(data_seurat,
+                          assayName = "RNA",
+                          sample = "sample_name",
+                          cluster = "cell_type_label")
+```
+
+
+construct pseudobulk data from xenium data
+```{r}
+pred_methods_sub = c("Manual","SingleR", "Azimuth", "RCTD")
+for (i in pred_methods_sub) {
+
+  xenium.obj$predicted_cell_type = unlist(xenium.obj[[paste0("predicted_cell_type_",
+                                                      i)]])
+  xenium.obj$predicted_cell_type = factor(as.character(xenium.obj$predicted_cell_type))
+
+  dge_PB[[i]] = MySeurat2PB(xenium.obj,
+                            assayName = "Xenium",
+                            sample = "sample_name",
+                            cluster = "predicted_cell_type")
+}
+```
+
+
+Calculate Spearman correlation coefficient between pseudobulk samples from each method and from reference
+```{r}
+coefs = list()
+for (i in pred_methods_sub) {
+  a = dge_PB[["Ref"]] 
+  b = dge_PB[[i]]
+  colnames(a) = gsub(".*_cluster","",colnames(a))
+  colnames(b) = gsub(".*_cluster","",colnames(b))
+    
+  common_rows = intersect(rownames(a), rownames(b) )
+  common_cols = intersect(colnames(a), colnames(b) )
+  
+  a = a[common_rows,common_cols]
+  b = b[common_rows,common_cols]
+  
+  colnames(a) = paste0("Ref_",colnames(a))
+  colnames(b) = paste0(i, "_",colnames(b))
+  
+  coefs[[i]]= cor(a$counts,b$counts,method = "spearman")
+}
+```
+
+
+Only compare common cell types in the four methods
+```{r}
+a = list()
+pred_methods_sub = c("Manual","SingleR", "Azimuth", "RCTD")
+for (i in pred_methods_sub) {
+  a[[i]] = levels(factor(unlist(xenium.obj[[paste0("predicted_cell_type_",i)]])))
+}
+a = do.call(c,a)
+common_cell_types = names(table(a)[table(a) == length(pred_methods_sub)])
+common_cell_types
+```
+
+
+Correlation coefficient of different methods with ref for each cell type
+```{r}
+b = list()
+
+for (j in common_cell_types) {
+  b[[j]] = data.frame()
+  for (i in pred_methods_sub) {
+    ref_cell_type = paste0("Ref","_",j)
+    xenium_cell_type = paste0(i,"_",j)
+    b[[j]][ref_cell_type,xenium_cell_type] = coefs[[i]][ref_cell_type,xenium_cell_type]
+  }
+  
+}
+b[[j]]
+```
+
+barplot of spearman coefficients
+```{r,results='hide'}
+p = list()
+for (j in common_cell_types) {
+  data_for_plot = as.matrix(b[[j]])
+  rownames(data_for_plot) = gsub("_.*","",rownames(data_for_plot))
+  colnames(data_for_plot) = gsub("_.*","",colnames(data_for_plot))
+  data_for_plot = round(data_for_plot,3)
+  
+  # convert table to data for ggplot
+  data_for_plot = as.data.frame(t(data_for_plot))
+  colnames(data_for_plot) = "coef"
+  data_for_plot$Method = rownames(data_for_plot)
+  data_for_plot$Method = factor(data_for_plot$Method, 
+                                levels = pred_methods_sub)
+  
+  p[[j]] <- ggplot(data=data_for_plot, 
+                   aes(x=Method, y=coef, fill=Method)) + 
+  scale_fill_manual(values= c(col.p[1],my_colors_20) ) + geom_bar(stat="identity") + 
+  labs(x=NULL, y="Coef", fill=NULL, title = j) + 
+  my_theme_ggplot + RotatedAxis() + NoLegend()
+}
+
+n_col = 5
+n_row = ceiling(length(p)/n_col)
+
+p3  = patchwork::wrap_plots(p,ncol = n_col)
+```
+
+
+Combine p1, p2 and p3
+```{r}
+n_row = 2
+n_col = 1
+scale_file = 1.6
+
+n_fontsize = 20
+
+my_plot = ggpubr::ggarrange(
+  ggpubr::ggarrange(p1, p2, ncol = 2, labels = c("A", "B"),
+                    font.label = list(size = n_fontsize, face = "bold", color ="black")), 
+  p3,
+  nrow = n_row, 
+  labels = c("","C"), # Labels of p2,
+  font.label = list(size = n_fontsize, face = "bold", color ="black")
+) 
+
+
+my_output_filename = paste0(my_output_prefix_figure,one_group,"_",
+                            "Figure4",".png")
+png(my_output_filename, width = 8*n_col*scale_file,
+    height = 3*n_row*scale_file, units = "in",res = 300)
+my_plot
+dev.off()
+```
+
+```{r, echo = FALSE, out.width='60%', fig.align='center'}
+my_output_filename = paste0(my_output_prefix_figure,one_group,"_",
+                            "Figure4",".png")
+knitr::include_graphics(my_output_filename)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+### Figure 6A
+
+print running time
+```{r}
+time_df = do.call(rbind,lapply(running_time,as.data.frame))
+a = round(as.numeric(time_df$t_diff),2)
+a = cbind.data.frame("Method" = rownames(time_df),
+                     "RunningTime" = a )
+a$Method = factor(a$Method,levels = c("SingleR","Azimuth",
+                                      "RCTD","scPred","scmapCell"))
+a 
+```
+
+Barplot of running time of each method
+```{r, include=FALSE}
+p <- ggplot(data=a, aes(x=Method, y=RunningTime,fill=Method)) + 
+  scale_fill_manual(values=my_colors_20) + geom_bar(stat="identity") + 
+  labs(x=NULL, y="Running Time (Minutes)", fill="") + 
+  my_theme_ggplot + RotatedAxis()
+
+my_output_filename = paste0(my_output_prefix_figure,one_group,"_", 
+                            "Barplot_running_time_of_each_method", ".png")
+
+png(my_output_filename,
+    width = 4*2*0.8, height = 3*2*0.8, units = "in",res = 300)
+p
+dev.off()
+```
+
+```{r, echo = FALSE, out.width='60%', fig.align='center'}
+knitr::include_graphics(my_output_filename)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+\pagebreak
+

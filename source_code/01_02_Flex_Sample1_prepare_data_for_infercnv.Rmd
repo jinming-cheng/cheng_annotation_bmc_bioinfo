@@ -1,0 +1,153 @@
+
+
+<!-- Author: Jinming Cheng -->
+<!-- Date: 17 July 2025 -->
+
+<!-- Notes: Run knitr::knit_child() in a separate index Rmd file and set `sample_name` parameter in the environment -->
+
+<!-- Usage: (R codes in index.Rmd):  -->
+<!-- ``` -->
+<!-- child_env <- new.env() -->
+<!-- child_env$sample_name <- "Flex_Sample1" -->
+<!-- res <- knitr::knit_child("01_02_Flex_Sample1_prepare_data_for_infercnv.Rmd", -->
+<!--                          envir = child_env, quiet = TRUE) -->
+<!-- ``` -->
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                                % -->
+
+```{r, include=FALSE}
+load("results/00_prepare.rdata")
+```
+
+Read in one normal total cell sample (ref data)
+
+```{r}
+normal_sample_name = "Normal_Total_cells_from_Patient_0233"
+new_sample_name = gsub("Normal_Total_cells_from_Patient_","N",normal_sample_name)
+```
+
+
+```{r}
+dge_data_dir_pal2021emboj = "../../../BPal/data/dge_data"
+dge_rds_files = list.files(dge_data_dir_pal2021emboj)
+file_num = sapply(normal_sample_name,grep, dge_rds_files)
+rds_file= paste0(dge_data_dir_pal2021emboj,"/",dge_rds_files[file_num])
+normal_dge_data = readRDS(rds_file)
+```
+
+```{r}
+normal_dge_data$samples$group    = new_sample_name
+normal_dge_data$samples$new_group = "Normal" 
+normal_dge_data$samples$cell_name = colnames(normal_dge_data)
+```
+
+
+Read in ordered gene annotation table (genes)
+```{r}
+file_gene_order = paste0(human_data_dir,"/", "gene_ordering_table.tsv")
+gene_annotation_table = read.table(file_gene_order,sep = "\t")
+rownames(gene_annotation_table) = gene_annotation_table[,1]
+colnames(gene_annotation_table) = c("symbol","chr","start","end")
+dim(gene_annotation_table)
+```
+
+<!-- ####################### -->
+<!-- #                     # -->
+Read in dge data and seurat obj
+<!-- notes: modified for one sample -->
+
+
+Sample file numbers
+```{r}
+sample_name = sample_name   
+# sample_name = c("SK01") # e.g.
+dge_data_dir=paste0(data_dir,"/","dge_data")
+filename_rds= paste0(dge_data_dir,"/","dge_",sample_name,".rds")
+dge_data = readRDS(filename_rds)
+```
+
+
+Number of genes and mito-read percentage
+```{r}
+dge_data$samples$num_exp_gene <- colSums(dge_data$counts>0)
+mito_genes <- rownames(dge_data)[grep("^MT-|^mt-",
+                                      dge_data$genes$Symbol)]
+dge_data$samples$mito_percentage <- 
+  colSums(dge_data$counts[mito_genes,])/
+  colSums(dge_data$counts)*100
+```
+
+
+Use gene symbols as row names
+```{r}
+dge_data <- dge_data[ !duplicated(dge_data$genes$Symbol), ]
+rownames(dge_data) <- dge_data$genes$Symbol
+```
+
+
+```{r}
+dim(dge_data)
+```
+
+read in data
+```{r}
+one_group = sample_name
+filename_rds = paste0(rds_res_dir,"/","data_seurat_cell_type","_", one_group,".rds")
+data_seurat = readRDS(filename_rds)
+```
+
+<!-- #                     # -->
+<!-- ####################### -->
+
+
+Generate dge data for inferCNV (tumor + normal)
+```{r}
+# ordered common gene names
+common_gene_names = intersect(rownames(gene_annotation_table),
+                              rownames(dge_data) )
+common_gene_names = intersect(common_gene_names,
+                              rownames(normal_dge_data) )
+
+dge_data = dge_data[common_gene_names, colnames(data_seurat)]
+dge_data$samples$new_group = data_seurat$seurat_clusters
+dge_data$samples$cell_name = colnames(dge_data) 
+
+common_colnames = intersect(colnames(dge_data$samples),
+                            colnames(normal_dge_data$samples) )
+dge_data$samples = dge_data$samples[,common_colnames]
+normal_dge_data$samples =  normal_dge_data$samples[,common_colnames]
+
+
+# merge tumor and normal
+dge_for_infercnv = cbind(dge_data,
+                         normal_dge_data[common_gene_names,])
+dge_for_infercnv$samples = dge_for_infercnv$samples[,c("new_group","group"),
+                                                    drop=FALSE]
+dge_for_infercnv$genes  = gene_annotation_table[common_gene_names,
+                                                c("chr","start","end")]
+
+unique_group_names = unique(dge_for_infercnv$samples$new_group) 
+dge_for_infercnv$ref_groups = "Normal"
+```
+
+```{r}
+head(dge_for_infercnv$samples)
+```
+
+```{r}
+head(dge_for_infercnv$genes)
+```
+
+```{r}
+dge_for_infercnv$ref_groups
+```
+
+Save dge data for inferCNV
+```{r}
+filename_rds = paste0(rds_res_dir,"/","dge_for_infercnv_",one_group,".rds")
+saveRDS(dge_for_infercnv,file = filename_rds )
+```
+<!-- %                                                                % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+

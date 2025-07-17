@@ -1,0 +1,103 @@
+
+<!-- Author: Jinming Cheng -->
+<!-- Date: 17 July 2025 -->
+
+# Prepare reference data for cell type annotation
+
+Single-cell references for Azimuth and RCTD need to be generated and saved to disk. (References for other methods don't need to be saved to disk.)
+
+## Reference (singlets)
+
+Reference using my cell type annotation and singlets.
+
+```{r,include=FALSE}
+eval_prepare_azimuth_ref = FALSE
+eval_prepare_RCTD_reference = FALSE
+```
+
+
+```{r,include=FALSE}
+load("results/00_prepare.rdata")
+```
+
+Load packages
+```{r loadPackage}
+library(Seurat)
+library(ggplot2)
+library(edgeR)
+library(SingleR)
+library(Azimuth)
+```
+
+
+### Azimuth reference (Flex_Sample1)
+
+azimuth reference dir
+```{r outputPrefix}
+ref_azimuth_dir = paste0(my_output_prefix,"ref_azimuth/Flex_Sample1")
+if(!dir.exists(ref_azimuth_dir)){dir.create(ref_azimuth_dir,recursive = TRUE)}
+```
+
+
+read in scRNASeq reference data
+```{r}
+filename_rds = paste0(rds_res_dir,"/", "data_seurat_cell_type","_", "Flex_Sample1",".rds")
+data_seurat = readRDS(file = filename_rds)
+```
+
+
+subset singlets as reference
+```{r}
+data_seurat_singlet = data_seurat[,data_seurat$db_type=="singlet"]
+```
+
+Run umap with reurn.model and normalize data using SCT method for azimuth
+```{r,results='hide',eval=eval_prepare_azimuth_ref}
+data_seurat_singlet = RunUMAP(data_seurat_singlet, dims=1:30,return.model = TRUE)
+data_seurat_singlet = SCTransform(data_seurat_singlet)
+```
+
+Prepare azimuth reference data
+```{r,results='hide',eval=eval_prepare_azimuth_ref}
+ref_azimuth = AzimuthReference(data_seurat_singlet,
+                               refUMAP = "umap",
+                               refDR = "pca",
+                               metadata = c("cell_type_label") )
+
+saveRDS(ref_azimuth,file = paste0(ref_azimuth_dir,"/","ref.Rds"))
+SaveAnnoyIndex(ref_azimuth[["refdr.annoy.neighbors"]], 
+               file = paste0(ref_azimuth_dir,"/","idx.annoy"))
+
+```
+
+
+
+### RCTD reference (Flex_Sample1)
+
+```{r}
+library(spacexr)
+```
+
+RCTD reference dir
+```{r outputPrefix}
+ref_RCTD_dir = paste0(my_output_prefix,"ref_RCTD/Flex_Sample1")
+if(!dir.exists(ref_RCTD_dir)){dir.create(ref_RCTD_dir,recursive = TRUE)}
+```
+
+
+Prepare reference
+```{r,results='hide',eval=eval_prepare_RCTD_reference}
+counts <- GetAssayData(data_seurat_singlet, assay = "RNA", slot = "counts")
+cell_type <- as.factor(data_seurat_singlet$cell_type_label)
+names(cell_type) <- colnames(data_seurat_singlet)
+nUMI <- data_seurat_singlet$nCount_RNA
+ref_RCTD <- Reference(counts, cell_type, nUMI)
+```
+
+save reference
+```{r,eval=eval_prepare_RCTD_reference}
+saveRDS(ref_RCTD,file = paste0(ref_RCTD_dir,"/","reference.rds"))
+```
+
+\pagebreak
+

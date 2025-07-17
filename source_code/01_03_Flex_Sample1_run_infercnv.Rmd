@@ -1,0 +1,318 @@
+
+<!-- Author: Jinming Cheng -->
+<!-- Date: 17 July 2025 -->
+
+<!-- Notes: Run knitr::knit_child() in a separate index Rmd file and set `sample_name` parameter in the environment -->
+
+<!-- Usage: (R codes in index.Rmd):  -->
+<!-- ``` -->
+<!-- child_env <- new.env() -->
+<!-- child_env$sample_name <- "Flex_Sample1" -->
+<!-- res <- knitr::knit_child("01_03_Flex_Sample1_run_infercnv.Rmd", -->
+<!--                          envir = child_env, quiet = TRUE) -->
+<!-- ``` -->
+
+## `r sample_name`
+
+```{r,include=FALSE}
+eval_infercnv = TRUE
+eval_heatmap4 = TRUE
+eval_save_rdata = TRUE
+```
+
+```{r, include=FALSE}
+load("results/00_prepare.rdata")
+```
+
+Parameters
+```{r}
+data_for_infercnv = paste0(rds_res_dir,"/","dge_for_infercnv_",sample_name,".rds")
+out_dir  = paste0(result_dir,"/","infercnv_res","/",sample_name)
+out_rdata_file =  paste0(out_dir,"/","infercnv_out.rdata") 
+```
+
+```{r}
+if (!dir.exists(out_dir)) {
+  dir.create(out_dir, recursive = TRUE)
+}
+```
+
+
+Read in data
+
+```{r}
+library(infercnv)
+```
+
+```{r}
+dge_for_infercnv = readRDS(file = data_for_infercnv)
+
+# remove the first column in gene table if it is gene symbol, 
+# because genes are already in the rownames, and infercnv use 'chr' as the first column
+# dge_for_infercnv$genes = dge_for_infercnv$genes[,c("chr","start","end")] 
+```
+
+
+sample information for infercnv (only the first column will be used)
+```{r}
+head(dge_for_infercnv$samples)
+```
+
+
+gene information for infercnv
+```{r}
+head(dge_for_infercnv$genes)
+```
+
+
+reference group names
+```{r}
+dge_for_infercnv$ref_groups
+```
+
+
+Create infercnv object
+
+<!-- (only the first column in dge_for_infercnv$samples will be used by infercnv) -->
+```{r, results='hide', eval=eval_infercnv}
+infercnv_obj <- CreateInfercnvObject(
+  raw_counts_matrix = dge_for_infercnv$counts,    # A count matrix
+  annotations_file  = dge_for_infercnv$samples,   # A data frame with sample annotation 
+  gene_order_file   = dge_for_infercnv$genes ,    # A data frame with gene annotation with chr, coords
+  ref_group_names   = dge_for_infercnv$ref_groups # A vector with reference group names
+)
+```
+
+
+Run infercnv
+```{r, results='hide', eval=eval_infercnv}
+infercnv_output <-
+  infercnv::run(infercnv_obj,
+                # without this flag, looks for pre-computed data in output directory.
+                resume_mode = FALSE,
+                cutoff = 0.1,
+                # cutoff=1 works well for Smart-seq2, and cutoff=0.1 works well for 10x Genomics
+                out_dir = out_dir,
+                cluster_by_groups = TRUE,
+                denoise = TRUE,
+                # Ignore HMM-based estimates of CNVs for now.
+                # This takes quite a lot of memory and is probably a Milton job.
+                HMM = FALSE
+  )
+```
+
+
+Draw heatmaps using ComplexHeatmap
+```{r}
+filename_infercnv_obj = paste0(out_dir,"/","run.final.infercnv_obj")
+data_for_plot_cnv = readRDS(filename_infercnv_obj)
+```
+
+```{r}
+library(ComplexHeatmap)
+```
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+### Figure 2B
+
+Heatmap with chromosome annotation on the left and legend on the right (use list)
+
+<!-- notes: for each sub heatmap -->
+<!-- column_split = list_ordered_groups[[i]]$sample -->
+
+```{r,results='hide',eval=eval_heatmap4,include=FALSE}
+
+ordered_groups = do.call(c, list(data_for_plot_cnv@observation_grouped_cell_indices,
+                                 data_for_plot_cnv@reference_grouped_cell_indices) )
+
+ordered_groups = cbind.data.frame( group = rep(names(ordered_groups),
+                                    c(lapply(ordered_groups, length))),
+                        position = do.call(rbind,
+                                           lapply(ordered_groups, data.frame) )[,1] )
+
+# use ordered levels in the raw dge data
+ordered_groups$group = factor(ordered_groups$group,
+                              levels = levels(dge_for_infercnv$samples$new_group) )
+
+
+data_for_heatmap = data_for_plot_cnv@expr.data[, ordered_groups$position]
+
+# add sample information from dge object # ** dge_for_infercnv ** #
+ordered_groups$sample = dge_for_infercnv$samples[colnames(data_for_heatmap),"group"]
+
+
+# colors for group used in infercnv
+# my_colors_col = my_colors_20
+my_colors_col =  c(my_colors_20, rev(viridis::plasma(10)) )  # add more colors on 06 Feb 2024
+color_groups_col = my_colors_col[1:nlevels(ordered_groups$group)]
+names(color_groups_col) = levels(ordered_groups$group)
+
+# colors for subsetting data
+ordered_groups$group = droplevels(ordered_groups$group)
+color_groups_col = color_groups_col[levels(ordered_groups$group)]
+
+# colors for sample information from dge data
+# my_colors_col = RColorBrewer::brewer.pal(8,name = "Accent")
+my_colors_col = col.p
+color_samples_col = my_colors_col[1:nlevels(ordered_groups$sample)]
+names(color_samples_col) = levels(ordered_groups$sample)
+
+
+# column_ha = HeatmapAnnotation( group  = ordered_groups$group,
+#                                sample = ordered_groups$sample,
+#                                col = list(group  = color_groups_col,
+#                                           sample = color_samples_col),
+#                                show_legend = TRUE, # show legend
+#                                show_annotation_name = FALSE )
+
+list_data_for_heatmap = list()
+list_ordered_groups = list()
+list_column_ha = list()
+list_ht_raw = list()
+
+for (i in levels(ordered_groups$group) ) {
+  keep_columns <- (ordered_groups$group==i)
+  list_data_for_heatmap[[i]] = data_for_heatmap[,keep_columns]
+  list_ordered_groups[[i]] = ordered_groups[ordered_groups$group==i,]
+
+  list_column_ha[[i]] = HeatmapAnnotation( group  = list_ordered_groups[[i]]$group,
+                                 sample = list_ordered_groups[[i]]$sample,
+                               col = list(group  = color_groups_col,
+                                          sample = color_samples_col),
+                               show_legend = TRUE, # show legend
+                               show_annotation_name = FALSE )
+
+ht =  Heatmap(matrix = list_data_for_heatmap[[i]],
+
+        width = 7,
+
+        # column anno #
+        top_annotation =  list_column_ha[[i]],
+        cluster_columns = TRUE,
+        show_column_dend = FALSE, # show denrogram or not
+        show_parent_dend_line = FALSE, # remove dashed line of parent dendrogram
+        show_heatmap_legend  = FALSE,
+        column_split = list_ordered_groups[[i]]$sample,
+        column_title = NULL,    # show column title or not (level names in `column_split`)
+        column_gap = unit(0, "mm"), # column split gap
+        # column_title_rot = 0,
+
+        # row anno #
+        cluster_rows = FALSE,
+        row_split = data_for_plot_cnv@gene_order$chr,
+        # row_title = NULL,      # show row title or not (level names in `row_split`)
+        row_title_rot = 0,
+
+        use_raster = TRUE,
+
+        show_column_names = FALSE,
+        show_row_names = FALSE)
+
+
+ list_ht_raw[[i]] = ht
+
+ if(i==levels(ordered_groups$group)[1]){
+   list_ht = ht
+ }else{
+   list_ht = list_ht + ht
+ }
+
+}
+
+output_filename = paste0(out_dir,"/","ComplexHeatmap_infercnv_with_sampleInfo_equal_width.png")
+
+date()
+
+png(filename = output_filename,
+    width = 8,height = 8,units = "in",res = 300)
+
+
+ComplexHeatmap::draw(list_ht,ht_gap = unit(1, "mm"))
+
+dev.off()
+
+date()
+```
+
+
+```{r,include=FALSE,eval=eval_heatmap4,include=FALSE}
+filename_rds = paste0(out_dir,"/","heatmap_list_combined.rds")
+saveRDS(list_ht,file = filename_rds)
+
+filename_rds = paste0(out_dir,"/","heatmap_list_raw.rds")
+saveRDS(list_ht_raw,file = filename_rds)
+```
+
+
+```{r,include=FALSE}
+output_filename = paste0(out_dir,"/","ComplexHeatmap_infercnv_with_sampleInfo_equal_width.png")
+```
+
+inferCNV heatmap using ComplexHeatmap (chr on the left, legend on the right with sample information)
+```{r, echo = FALSE, out.width='100%', fig.align='center'}
+my_output_filename = output_filename
+knitr::include_graphics(my_output_filename)
+```
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+<!-- Save rdata -->
+```{r,eval=eval_save_rdata,include=FALSE}
+save.image(file = out_rdata_file)
+```
+
+
+
+calculate instability score
+```{r}
+instability_score = apply((data_for_heatmap-1)**2, 2, mean)
+range(instability_score)
+```
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %                                                 % -->
+
+### Figure 2C
+
+Boxplot of instability score
+```{r,include=FALSE}
+data_for_plot = cbind.data.frame(instability_score, ordered_groups)
+
+my_colors =  c(my_colors_20, 
+               rev(viridis::plasma(10)) ) 
+p1 <- ggplot(data = data_for_plot,
+             aes(x=group, 
+                 y=instability_score, color=group ) ) + 
+  geom_boxplot(show.legend=FALSE) + 
+  scale_color_manual(values=my_colors ) + 
+  labs(x="", y="inferCNV instability score",title = sample_name) +
+  # coord_cartesian(ylim=c(0,0.02) ) +
+  my_theme_ggplot + my_theme_facet + Seurat::RotatedAxis()
+
+
+n_scale = nlevels(ordered_groups$group)/10
+
+my_output_filename = paste0(out_dir,"/",
+                            "Boxplot_infercnv_instability_score",".png")
+
+png(my_output_filename,
+    height = 4*1,
+    width = 4*1*n_scale,
+    units = "in",res = 300)
+p1
+dev.off()
+```
+
+```{r, echo = FALSE, out.width='60%', fig.align='center'}
+knitr::include_graphics(my_output_filename)
+```
+
+
+<!-- %                                                 % -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+\pagebreak
